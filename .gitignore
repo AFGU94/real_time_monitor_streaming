@@ -1,0 +1,35 @@
+# Entorno Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Terraform (estado y vars con datos sensibles)
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.tfvars.backup
+
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+
+# Carpetas del proyecto (no subir a GitHub)
+.cursor/
+docs/
+scripts/
+dbt_project/
+
+# Logs
+*.log
+
+# Credenciales y claves
+*.pem
+*.key
+credentials.json
+service-account*.json
