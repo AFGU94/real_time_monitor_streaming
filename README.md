@@ -1,128 +1,130 @@
 # Real-Time Crypto/Market Monitor (Streaming)
 
-Sistema de monitorización de Bitcoin en tiempo (casi) real sobre **Google Cloud (Free Tier)**:
+Near real-time Bitcoin monitoring on **Google Cloud (Free Tier)**:
 
-- **Origen:** Binance API (velas 15m BTCUSDT).
-- **Ingesta:** Pub/Sub.
-- **Procesado:** Cloud Run Job cada 15 min (warm-up desde BigQuery, indicadores con pandas-ta, publicación a Pub/Sub) + Cloud Run suscriptor (inserción BigQuery, alertas Discord con hysteresis en Firestore).
-- **Almacenamiento:** BigQuery `crypto_analytics.market_indicators` (particionada por día, clustering por symbol).
-- **Alertas:** Bot de Discord con lógica de estado en Firestore (última señal, precio, RSI) y umbral de mejora (refuerzos de compra/venta); evita spam y solo avisa cuando tiene sentido actuar.
-- **Coste:** Crea a mano una alerta de presupuesto (p. ej. $1 USD) en **Billing → Budgets**.
+- **Source:** Binance API (15m candles, BTCUSDT).
+- **Ingestion:** Pub/Sub.
+- **Processing:** Cloud Run Job every 15 min (BigQuery warm-up, indicators via pandas-ta, publish to Pub/Sub) + Cloud Run subscriber (BigQuery insert, Discord alerts with Firestore hysteresis).
+- **Storage:** BigQuery `crypto_analytics.market_indicators` (day-partitioned, clustered by symbol).
+- **Alerts:** Discord bot with state logic in Firestore (last signal, price, RSI) and an improvement threshold (buy/sell reinforcements); avoids spam and only notifies when it makes sense to act.
+- **Cost:** Set up a budget alert (e.g. $1 USD) manually under **Billing → Budgets**.
 
-## Flujo de datos (**FLUJO DE DATOS**)
+## Data flow (**DATA FLOW**)
 
-De forma resumida, el flujo es:
+In short, the flow is:
 
+```
 Binance API (15m klines)
         │
         ▼
-Cloud Run Job (cada 15 min)
-   • Lee últimos 50 registros de BigQuery (warm-up)
-   • Calcula RSI, EMA9, EMA21, señal (BUY/SELL/NEUTRAL)
-   • Publica 1 mensaje por vela → Pub/Sub
+Cloud Run Job (every 15 min)
+   • Reads last 50 rows from BigQuery (warm-up)
+   • Computes RSI, EMA9, EMA21, signal (BUY/SELL/NEUTRAL)
+   • Publishes 1 message per candle → Pub/Sub
         │
         ▼
 Pub/Sub (topic: crypto-prices)
         │ push
         ▼
 Cloud Run (subscriber)
-   • Inserta fila en BigQuery (streaming)
-   • Si signal=(logica de estado, checked conditions) → Discord + Firestore
+   • Inserts row into BigQuery (streaming)
+   • If signal=(state logic, conditions met) → Discord + Firestore
         │
         ▼
 BigQuery: crypto_analytics.market_indicators
-   (particionada por día, clustering por symbol)
+   (day-partitioned, clustered by symbol)
+```
 
 - **1. Binance API (15m klines)**  
-  El Job en Cloud Run llama a Binance cada 15 minutos para obtener velas de 15m de `BTCUSDT` (OHLCV).
+  The Cloud Run Job calls Binance every 15 minutes to fetch 15m candles for `BTCUSDT` (OHLCV).
 
-- **2. Cloud Run Job (cada 15 min)**  
-  - Lee últimos registros de BigQuery (warm-up, opcional).  
-  - Combina histórico + velas nuevas y calcula indicadores técnicos (RSI(14), EMA(9), EMA(21)).  
-  - Calcula una señal por vela: `BUY`, `SELL` o `NEUTRAL`.  
-  - Publica **un mensaje JSON por vela** en Pub/Sub con todos los campos (precio, volumen, indicadores, señal).
+- **2. Cloud Run Job (every 15 min)**  
+  - Reads the latest rows from BigQuery (warm-up, optional).  
+  - Merges history with new candles and computes technical indicators (RSI(14), EMA(9), EMA(21)).  
+  - Computes one signal per candle: `BUY`, `SELL`, or `NEUTRAL`.  
+  - Publishes **one JSON message per candle** to Pub/Sub with all fields (price, volume, indicators, signal).
 
 - **3. Pub/Sub (topic `crypto-prices`)**  
-  - El Job publica en el topic `crypto-prices`.  
-  - Una suscripción push envía cada mensaje al servicio Cloud Run suscriptor.
+  - The Job publishes to the `crypto-prices` topic.  
+  - A push subscription delivers each message to the Cloud Run subscriber service.
 
 - **4. Cloud Run (subscriber)**  
-  - Recibe el push de Pub/Sub, decodifica el JSON.  
-  - Inserta una fila en BigQuery (streaming insert) en la tabla `crypto_analytics.market_indicators`.  
-  - Evalúa la señal (`BUY`/`SELL`) junto con el **estado almacenado en Firestore** para decidir si envía o no una alerta a Discord.
+  - Receives the Pub/Sub push, decodes the JSON.  
+  - Inserts one row into BigQuery (streaming insert) in the `crypto_analytics.market_indicators` table.  
+  - Evaluates the signal (`BUY`/`SELL`) together with **state stored in Firestore** to decide whether to send a Discord alert.
 
 - **5. BigQuery: `crypto_analytics.market_indicators`**  
-  - Tabla particionada por día, con clustering por `symbol`.  
-  - Cada fila representa una vela de 15 min con sus indicadores y la señal final.  
-  - Las particiones antiguas se borran automáticamente pasado un tiempo para mantenerse dentro del Free Tier.
+  - Table partitioned by day, clustered by `symbol`.  
+  - Each row represents one 15m candle with its indicators and final signal.  
+  - Older partitions are dropped automatically after a set period to stay within the Free Tier.
 
-En paralelo, **Firestore** almacena el último estado de alerta (`signal`, `price`, `timestamp`, `rsi`, `expireAt`) y **Discord** recibe las alertas en forma de embeds (compra/venta/refuerzos).
+In parallel, **Firestore** stores the latest alert state (`signal`, `price`, `timestamp`, `rsi`, `expireAt`), and **Discord** receives alerts as embeds (buy/sell/reinforcements).
 
-## Alertas (lógica de estado)
+## Alerts (state logic)
 
-El comportamiento de alertas está implementado en `src/subscriber/main.py` (función `maybe_send_alert`) y se apoya en Firestore:
+Alert behaviour is implemented in `src/subscriber/main.py` (function `maybe_send_alert`) and relies on Firestore:
 
-- **Estado en Firestore**  
-  - Se guarda un documento `crypto_alerts/last_alert` con:  
-    - `signal`: última señal enviada (`BUY` o `SELL`).  
-    - `price`: precio de referencia de esa señal.  
-    - `rsi`: RSI en el momento de la señal.  
-    - `timestamp`: cuándo se guardó.  
-    - `expireAt`: fecha a partir de la cual Firestore borra el documento (TTL, p. ej. 30 días).
+- **State in Firestore**  
+  - A document `crypto_alerts/last_alert` is stored with:  
+    - `signal`: last sent signal (`BUY` or `SELL`).  
+    - `price`: reference price for that signal.  
+    - `rsi`: RSI at the time of the signal.  
+    - `timestamp`: when it was stored.  
+    - `expireAt`: time after which Firestore deletes the document (TTL, e.g. 30 days).
 
-- **Señal BUY**  
-  - Si la señal actual es `BUY` y la última señal **no** fue `BUY` (era `SELL`, `NEUTRAL` o no había estado):  
-    - Envía un embed verde a Discord tipo **“Oportunidad de compra”** (par, precio actual, RSI).  
-    - Actualiza Firestore con `signal=BUY`, `price=precio_actual`, `rsi=RSI_actual`.  
-  - Si la señal actual es `BUY` y la última también fue `BUY`:  
-    - Si el precio actual es **al menos un 5 % más bajo** que el `price` guardado (`precio_actual < price * 0.95`):  
-      - Envía un embed de **refuerzo de compra**: *“Refuerzo de compra: mejor precio detectado (oportunidad de promediar)”*.  
-      - Actualiza Firestore con el nuevo `price` (nuevo nivel de referencia).  
-    - Si no hay mejora ≥ 5 %, **no envía nada** (evita spam mientras el mercado sigue en la misma zona).
+- **BUY signal**  
+  - If the current signal is `BUY` and the last signal was **not** `BUY` (it was `SELL`, `NEUTRAL`, or missing):  
+    - Sends a green Discord embed **“Buy opportunity”** (pair, current price, RSI).  
+    - Updates Firestore with `signal=BUY`, `price=current_price`, `rsi=current_rsi`.  
+  - If the current signal is `BUY` and the last was also `BUY`:  
+    - If the current price is **at least 5% lower** than the stored `price` (`current_price < price * 0.95`):  
+      - Sends a **buy reinforcement** embed: *“Reinforced buy: better price detected (opportunity to average in)”*.  
+      - Updates Firestore with the new `price` (new reference level).  
+    - If there is no ≥5% improvement, **sends nothing** (avoids spam while the market stays in the same zone).
 
-- **Señal SELL**  
-  - Si la señal actual es `SELL` y la última señal en Firestore fue `BUY`:  
-    - Calcula la **ganancia hipotética** entre el `price` guardado (precio de compra) y el precio actual.  
-    - Envía un embed rojo de venta con: precio de compra, precio actual y % de ganancia/pérdida.  
-    - Actualiza Firestore con `signal=SELL` y `price=precio_actual`.  
-  - Si la señal actual es `SELL` y la última señal fue `SELL`:  
-    - Si el precio actual es **al menos un 5 % más alto** que el `price` guardado (`precio_actual > price * 1.05`):  
-      - Envía un embed de **refuerzo de venta**: *“Refuerzo de venta: mejor precio detectado (mejor salida)”*.  
-      - Actualiza Firestore con el nuevo `price`.  
-    - Si no hay mejora ≥ 5 %, no envía nada (no spamea múltiples SELL casi iguales).  
-  - Si la última señal no fue ni `BUY` ni `SELL` (estado nulo/inconsistente), ignora la señal `SELL` (no vende algo que “no compró” antes).
+- **SELL signal**  
+  - If the current signal is `SELL` and the last signal in Firestore was `BUY`:  
+    - Computes **hypothetical profit** between the stored `price` (entry price) and the current price.  
+    - Sends a red sell embed with: entry price, current price, and % profit/loss.  
+    - Updates Firestore with `signal=SELL` and `price=current_price`.  
+  - If the current signal is `SELL` and the last signal was `SELL`:  
+    - If the current price is **at least 5% higher** than the stored `price` (`current_price > price * 1.05`):  
+      - Sends a **sell reinforcement** embed: *“Reinforced sell: better price detected (better exit)”*.  
+      - Updates Firestore with the new `price`.  
+    - If there is no ≥5% improvement, sends nothing (avoids spamming near-identical SELLs).  
+  - If the last signal was neither `BUY` nor `SELL` (null or inconsistent state), the bot ignores the `SELL` signal (does not “sell” something it never “bought”).
 
-En resumen, el bot **recuerda lo que hizo antes** y solo envía alertas cuando:
+In summary, the bot **remembers what it did before** and only sends alerts when:
 
-- Cambia de estado relevante (por ejemplo, de NEUTRAL/SELL a BUY, o de BUY a SELL), o  
-- El mercado ofrece **un precio significativamente mejor (±5 %)** para reforzar una decisión anterior (más barato para comprar, mejor precio para vender).
+- The state changes in a meaningful way (e.g. from NEUTRAL/SELL to BUY, or from BUY to SELL), or  
+- The market offers a **significantly better price (±5%)** to reinforce a previous decision (cheaper to buy, better price to sell).
 
-## Guía paso a paso
+## Step-by-step guide
 
-1. **Terraform con placeholders** de imagen (Job: `us-docker.pkg.dev/cloudrun/container/job:latest`, Service: `gcr.io/cloudrun/hello`).
-2. **Apply** → montar infraestructura (esqueleto).
-3. **Verificación** en consola GCP (Cloud Run verde).
-4. **Desarrollo** y prueba local de scripts Python.
-5. **Build y push** de imágenes reales a Artifact Registry.
-6. **Update** → cambiar variables de imagen en Terraform y `terraform apply` de nuevo.
+1. **Terraform with placeholder images** (Job: `us-docker.pkg.dev/cloudrun/container/job:latest`, Service: `gcr.io/cloudrun/hello`).
+2. **Apply** → create infrastructure (skeleton).
+3. **Verify** in the GCP console (Cloud Run up).
+4. **Develop** and test Python scripts locally.
+5. **Build and push** real images to Artifact Registry.
+6. **Update** → set image variables in Terraform and run `terraform apply` again.
 
-## Estructura
+## Structure
 
-- `infra/` – IaC Terraform (Pub/Sub, BigQuery, Cloud Run, Scheduler). Recursos en código; presupuesto/alertas en Billing a mano.
-- `src/` – Código Python de ingesta (job + subscriber); usar `.venv` en la raíz.
+- `infra/` – Terraform IaC (Pub/Sub, BigQuery, Cloud Run, Scheduler). Resources in code; budget/alerts in Billing are set manually.
+- `src/` – Python ingestion code (job + subscriber); use `.venv` at the repo root.
 - `src/job/` – Cloud Run Job: Binance + BQ warm-up + RSI/EMA + Pub/Sub.
-- `src/subscriber/` – Cloud Run Service: push Pub/Sub → BigQuery + Firestore + Discord.
-- `dbt_project/` – Reservado para modelos dbt (ver convenciones en `.cursor/rules/`).
+- `src/subscriber/` – Cloud Run Service: Pub/Sub push → BigQuery + Firestore + Discord.
+- `dbt_project/` – Reserved for dbt models (see conventions in `.cursor/rules/`).
 
-## Convenciones
+## Conventions
 
-El proyecto sigue las reglas en `.cursor/rules/`:
+The project follows the rules in `.cursor/rules/`:
 
-- **IaC**: recursos en `infra/` (Terraform); región `us-central1` (Always Free).
-- **Código**: Python modular, con type hints y PEP 8; errores manejados y logs a stdout (Cloud Logging); dependencias fijadas en `requirements.txt`.
-- **Estructura**: `infra/`, `src/`, `dbt_project/` (reservado).
+- **IaC:** resources under `infra/` (Terraform); region `us-central1` (Always Free).
+- **Code:** Modular Python with type hints and PEP 8; errors handled and logs to stdout (Cloud Logging); dependencies pinned in `requirements.txt`.
+- **Structure:** `infra/`, `src/`, `dbt_project/` (reserved).
 
-## Requisitos
+## Requirements
 
 - Python 3.12+, Docker, `gcloud`, Terraform ≥ 1.0.
-- Cuenta GCP con facturación (para presupuesto y uso dentro del free tier).
+- A GCP account with billing enabled (for budget and usage within the free tier).
