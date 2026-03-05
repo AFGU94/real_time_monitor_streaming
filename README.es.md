@@ -119,13 +119,6 @@ En resumen, el bot **recuerda lo que hizo antes** y solo envía alertas cuando:
 - `dbt_project/` – Reservado para modelos dbt (ver convenciones en `.cursor/rules/`).
 
 ---
-## Convenciones
-
-- **IaC**: recursos en `infra/` (Terraform); región `us-central1` (Always Free Tier).
-- **Código**: Python modular, con type hints y PEP 8; errores manejados y logs a stdout (Cloud Logging); dependencias fijadas en `requirements.txt`.
-- **Estructura**: `infra/`, `src/`, `dbt_project/` (reservado).
-
----
 ## Requisitos
 
 - Python 3.12+, Docker, `gcloud`, Terraform ≥ 1.0.
