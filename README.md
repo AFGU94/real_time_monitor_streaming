@@ -1,4 +1,5 @@
-# Real-Time Crypto/Market Monitor (Streaming)
+# Real-Time Crypto/Market Monitor (Streaming in GCP Free Tier)
+**This document is also available in [Spanish](README.es.md).**
 
 Near real-time Bitcoin monitoring on **Google Cloud (Free Tier)**:
 
@@ -9,7 +10,8 @@ Near real-time Bitcoin monitoring on **Google Cloud (Free Tier)**:
 - **Alerts:** Discord bot with state logic in Firestore (last signal, price, RSI) and an improvement threshold (buy/sell reinforcements); avoids spam and only notifies when it makes sense to act.
 - **Cost:** Set up a budget alert (e.g. $1 USD) manually under **Billing → Budgets**.
 
-## Data flow (**DATA FLOW**)
+---
+## Data flow
 
 In short, the flow is:
 
@@ -60,7 +62,8 @@ BigQuery: crypto_analytics.market_indicators
 
 In parallel, **Firestore** stores the latest alert state (`signal`, `price`, `timestamp`, `rsi`, `expireAt`), and **Discord** receives alerts as embeds (buy/sell/reinforcements).
 
-## Alerts (state logic)
+---
+## Alerts state logic (Cloud Run Subscriber)
 
 Alert behaviour is implemented in `src/subscriber/main.py` (function `maybe_send_alert`) and relies on Firestore:
 
@@ -99,6 +102,7 @@ In summary, the bot **remembers what it did before** and only sends alerts when:
 - The state changes in a meaningful way (e.g. from NEUTRAL/SELL to BUY, or from BUY to SELL), or  
 - The market offers a **significantly better price (±5%)** to reinforce a previous decision (cheaper to buy, better price to sell).
 
+---
 ## Step-by-step guide
 
 1. **Terraform with placeholder images** (Job: `us-docker.pkg.dev/cloudrun/container/job:latest`, Service: `gcr.io/cloudrun/hello`).
@@ -108,6 +112,7 @@ In summary, the bot **remembers what it did before** and only sends alerts when:
 5. **Build and push** real images to Artifact Registry.
 6. **Update** → set image variables in Terraform and run `terraform apply` again.
 
+---
 ## Structure
 
 - `infra/` – Terraform IaC (Pub/Sub, BigQuery, Cloud Run, Scheduler). Resources in code; budget/alerts in Billing are set manually.
@@ -116,14 +121,14 @@ In summary, the bot **remembers what it did before** and only sends alerts when:
 - `src/subscriber/` – Cloud Run Service: Pub/Sub push → BigQuery + Firestore + Discord.
 - `dbt_project/` – Reserved for dbt models (see conventions in `.cursor/rules/`).
 
+---
 ## Conventions
 
-The project follows the rules in `.cursor/rules/`:
-
-- **IaC:** resources under `infra/` (Terraform); region `us-central1` (Always Free).
+- **IaC:** resources under `infra/` (Terraform); region `us-central1` (Always Free Tier).
 - **Code:** Modular Python with type hints and PEP 8; errors handled and logs to stdout (Cloud Logging); dependencies pinned in `requirements.txt`.
 - **Structure:** `infra/`, `src/`, `dbt_project/` (reserved).
 
+---
 ## Requirements
 
 - Python 3.12+, Docker, `gcloud`, Terraform ≥ 1.0.

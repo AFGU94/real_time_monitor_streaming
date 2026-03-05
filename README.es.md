@@ -1,4 +1,4 @@
-# Real-Time Crypto/Market Monitor (Streaming)
+# Real-Time Crypto/Market Monitor (Streaming en GCP Free Tier)
 
 Sistema de monitorización de Bitcoin en tiempo (casi) real sobre **Google Cloud (Free Tier)**:
 
@@ -9,7 +9,8 @@ Sistema de monitorización de Bitcoin en tiempo (casi) real sobre **Google Cloud
 - **Alertas:** Bot de Discord con lógica de estado en Firestore (última señal, precio, RSI) y umbral de mejora (refuerzos de compra/venta); evita spam y solo avisa cuando tiene sentido actuar.
 - **Coste:** Crea a mano una alerta de presupuesto (p. ej. $1 USD) en **Billing → Budgets**.
 
-## Flujo de datos (**FLUJO DE DATOS**)
+---
+## Flujo de datos
 
 De forma resumida, el flujo es:
 
@@ -58,7 +59,8 @@ BigQuery: crypto_analytics.market_indicators
 
 En paralelo, **Firestore** almacena el último estado de alerta (`signal`, `price`, `timestamp`, `rsi`, `expireAt`) y **Discord** recibe las alertas en forma de embeds (compra/venta/refuerzos).
 
-## Alertas (lógica de estado)
+---
+## Alertas - lógica de estado (Cloud Run Suscriptor)
 
 El comportamiento de alertas está implementado en `src/subscriber/main.py` (función `maybe_send_alert`) y se apoya en Firestore:
 
@@ -97,6 +99,7 @@ En resumen, el bot **recuerda lo que hizo antes** y solo envía alertas cuando:
 - Cambia de estado relevante (por ejemplo, de NEUTRAL/SELL a BUY, o de BUY a SELL), o  
 - El mercado ofrece **un precio significativamente mejor (±5 %)** para reforzar una decisión anterior (más barato para comprar, mejor precio para vender).
 
+---
 ## Guía paso a paso
 
 1. **Terraform con placeholders** de imagen (Job: `us-docker.pkg.dev/cloudrun/container/job:latest`, Service: `gcr.io/cloudrun/hello`).
@@ -106,6 +109,7 @@ En resumen, el bot **recuerda lo que hizo antes** y solo envía alertas cuando:
 5. **Build y push** de imágenes reales a Artifact Registry.
 6. **Update** → cambiar variables de imagen en Terraform y `terraform apply` de nuevo.
 
+---
 ## Estructura
 
 - `infra/` – IaC Terraform (Pub/Sub, BigQuery, Cloud Run, Scheduler). Recursos en código; presupuesto/alertas en Billing a mano.
@@ -114,14 +118,14 @@ En resumen, el bot **recuerda lo que hizo antes** y solo envía alertas cuando:
 - `src/subscriber/` – Cloud Run Service: push Pub/Sub → BigQuery + Firestore + Discord.
 - `dbt_project/` – Reservado para modelos dbt (ver convenciones en `.cursor/rules/`).
 
+---
 ## Convenciones
 
-El proyecto sigue las reglas en `.cursor/rules/`:
-
-- **IaC**: recursos en `infra/` (Terraform); región `us-central1` (Always Free).
+- **IaC**: recursos en `infra/` (Terraform); región `us-central1` (Always Free Tier).
 - **Código**: Python modular, con type hints y PEP 8; errores manejados y logs a stdout (Cloud Logging); dependencias fijadas en `requirements.txt`.
 - **Estructura**: `infra/`, `src/`, `dbt_project/` (reservado).
 
+---
 ## Requisitos
 
 - Python 3.12+, Docker, `gcloud`, Terraform ≥ 1.0.
